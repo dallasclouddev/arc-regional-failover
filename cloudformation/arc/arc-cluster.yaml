@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Application Recovery Controller (ARC) - Cluster and Control Panel'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name prefix
+    Type: String
+    Default: arc-demo
+
+Resources:
+  # ARC Cluster
+  RecoveryCluster:
+    Type: AWS::Route53RecoveryControl::Cluster
+    Properties:
+      Name: !Sub '${EnvironmentName}-recovery-cluster'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-recovery-cluster'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Control Panel
+  ControlPanel:
+    Type: AWS::Route53RecoveryControl::ControlPanel
+    Properties:
+      Name: !Sub '${EnvironmentName}-control-panel'
+      ClusterArn: !GetAtt RecoveryCluster.ClusterArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-control-panel'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Routing Control for Primary Region
+  PrimaryRoutingControl:
+    Type: AWS::Route53RecoveryControl::RoutingControl
+    Properties:
+      Name: !Sub '${EnvironmentName}-primary-routing-control'
+      ControlPanelArn: !GetAtt ControlPanel.ControlPanelArn
+      ClusterArn: !GetAtt RecoveryCluster.ClusterArn
+
+  # Routing Control for Secondary Region
+  SecondaryRoutingControl:
+    Type: AWS::Route53RecoveryControl::RoutingControl
+    Properties:
+      Name: !Sub '${EnvironmentName}-secondary-routing-control'
+      ControlPanelArn: !GetAtt ControlPanel.ControlPanelArn
+      ClusterArn: !GetAtt RecoveryCluster.ClusterArn
+
+  # Safety Rule - At least one routing control must be ON
+  AtLeastOneRule:
+    Type: AWS::Route53RecoveryControl::SafetyRule
+    Properties:
+      Name: !Sub '${EnvironmentName}-at-least-one-rule'
+      ControlPanelArn: !GetAtt ControlPanel.ControlPanelArn
+      RuleConfig:
+        Type: ATLEAST
+        Threshold: 1
+        Inverted: false
+      AssertedControls:
+        - !GetAtt PrimaryRoutingControl.RoutingControlArn
+        - !GetAtt SecondaryRoutingControl.RoutingControlArn
+
+  # Safety Rule - No more than one routing control can be ON (for active-passive)
+  AtMostOneRule:
+    Type: AWS::Route53RecoveryControl::SafetyRule
+    Properties:
+      Name: !Sub '${EnvironmentName}-at-most-one-rule'
+      ControlPanelArn: !GetAtt ControlPanel.ControlPanelArn
+      RuleConfig:
+        Type: ATLEAST
+        Threshold: 2
+        Inverted: true
+      AssertedControls:
+        - !GetAtt PrimaryRoutingControl.RoutingControlArn
+        - !GetAtt SecondaryRoutingControl.RoutingControlArn
+
+Outputs:
+  ClusterArn:
+    Description: Recovery cluster ARN
+    Value: !GetAtt RecoveryCluster.ClusterArn
+    Export:
+      Name: !Sub '${EnvironmentName}-ClusterArn'
+
+  ClusterEndpoints:
+    Description: Recovery cluster endpoints
+    Value: !Join 
+      - ','
+      - !GetAtt RecoveryCluster.ClusterEndpoints[*].Endpoint
+    Export:
+      Name: !Sub '${EnvironmentName}-ClusterEndpoints'
+
+  ControlPanelArn:
+    Description: Control panel ARN
+    Value: !GetAtt ControlPanel.ControlPanelArn
+    Export:
+      Name: !Sub '${EnvironmentName}-ControlPanelArn'
+
+  PrimaryRoutingControlArn:
+    Description: Primary routing control ARN
+    Value: !GetAtt PrimaryRoutingControl.RoutingControlArn
+    Export:
+      Name: !Sub '${EnvironmentName}-PrimaryRoutingControlArn'
+
+  SecondaryRoutingControlArn:
+    Description: Secondary routing control ARN
+    Value: !GetAtt SecondaryRoutingControl.RoutingControlArn
+    Export:
+      Name: !Sub '${EnvironmentName}-SecondaryRoutingControlArn'

@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Aurora PostgreSQL Global Database - Secondary Region'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name prefix
+    Type: String
+    Default: arc-demo
+
+  GlobalClusterIdentifier:
+    Description: Global cluster identifier from primary region
+    Type: String
+
+  DBInstanceClass:
+    Description: Database instance class
+    Type: String
+    Default: db.r5.large
+    AllowedValues:
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r6g.large
+      - db.r6g.xlarge
+      - db.r6g.2xlarge
+
+  Engine:
+    Description: Aurora database engine
+    Type: String
+    Default: aurora-postgresql
+    AllowedValues:
+      - aurora-postgresql
+
+  EngineVersion:
+    Description: Aurora PostgreSQL engine version
+    Type: String
+    Default: '14.6'
+
+Resources:
+  # DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${EnvironmentName}-db-subnet-group'
+      DBSubnetGroupDescription: Subnet group for Aurora cluster
+      SubnetIds: !Split 
+        - ','
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-PrivateSubnets'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-subnet-group'
+
+  # Secondary DB Cluster
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub '${EnvironmentName}-secondary-cluster'
+      Engine: !Ref Engine
+      EngineVersion: !Ref EngineVersion
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-DBSecurityGroup'
+      GlobalClusterIdentifier: !Ref GlobalClusterIdentifier
+      StorageEncrypted: true
+      EnableCloudwatchLogsExports:
+        - postgresql
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-secondary-cluster'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Secondary DB Instance
+  DBInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-secondary-instance-1'
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: !Ref Engine
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-secondary-instance-1'
+
+  # Secondary DB Instance (for HA within region)
+  DBInstance2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-secondary-instance-2'
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: !Ref Engine
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-secondary-instance-2'
+
+  # Enhanced Monitoring Role
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-rds-monitoring-role'
+
+  # CloudWatch Alarms
+  DBCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-secondary-high-cpu'
+      AlarmDescription: Alert when database CPU is high
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Ref DBCluster
+
+  DBConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-secondary-high-connections'
+      AlarmDescription: Alert when database connections are high
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Ref DBCluster
+
+Outputs:
+  DBClusterIdentifier:
+    Description: Secondary DB cluster identifier
+    Value: !Ref DBCluster
+    Export:
+      Name: !Sub '${EnvironmentName}-SecondaryDBCluster'
+
+  DBClusterEndpoint:
+    Description: Secondary DB cluster endpoint
+    Value: !GetAtt DBCluster.Endpoint.Address
+    Export:
+      Name: !Sub '${EnvironmentName}-SecondaryDBEndpoint'
+
+  DBClusterReadEndpoint:
+    Description: Secondary DB cluster read endpoint
+    Value: !GetAtt DBCluster.ReadEndpoint.Address
+    Export:
+      Name: !Sub '${EnvironmentName}-SecondaryDBReadEndpoint'

@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Aurora PostgreSQL Global Database - Primary Region'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name prefix
+    Type: String
+    Default: arc-demo
+
+  DBName:
+    Description: Database name
+    Type: String
+    Default: appdb
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  DBUsername:
+    Description: Database master username
+    Type: String
+    Default: dbadmin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  DBPassword:
+    Description: Database master password
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: '[a-zA-Z0-9]*'
+
+  DBInstanceClass:
+    Description: Database instance class
+    Type: String
+    Default: db.r5.large
+    AllowedValues:
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r6g.large
+      - db.r6g.xlarge
+      - db.r6g.2xlarge
+
+  Engine:
+    Description: Aurora database engine
+    Type: String
+    Default: aurora-postgresql
+    AllowedValues:
+      - aurora-postgresql
+
+  EngineVersion:
+    Description: Aurora PostgreSQL engine version
+    Type: String
+    Default: '14.6'
+
+Resources:
+  # DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${EnvironmentName}-db-subnet-group'
+      DBSubnetGroupDescription: Subnet group for Aurora cluster
+      SubnetIds: !Split 
+        - ','
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-PrivateSubnets'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-subnet-group'
+
+  # Global Database Cluster
+  GlobalCluster:
+    Type: AWS::RDS::GlobalCluster
+    Properties:
+      GlobalClusterIdentifier: !Sub '${EnvironmentName}-global-cluster'
+      Engine: !Ref Engine
+      EngineVersion: !Ref EngineVersion
+      DatabaseName: !Ref DBName
+      StorageEncrypted: true
+
+  # Primary DB Cluster
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub '${EnvironmentName}-primary-cluster'
+      Engine: !Ref Engine
+      EngineVersion: !Ref EngineVersion
+      DatabaseName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-DBSecurityGroup'
+      GlobalClusterIdentifier: !Ref GlobalCluster
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      EnableCloudwatchLogsExports:
+        - postgresql
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-primary-cluster'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Primary DB Instance
+  DBInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-primary-instance-1'
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: !Ref Engine
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-primary-instance-1'
+
+  # Secondary DB Instance (for HA within region)
+  DBInstance2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-primary-instance-2'
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: !Ref Engine
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-primary-instance-2'
+
+  # Enhanced Monitoring Role
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-rds-monitoring-role'
+
+  # CloudWatch Alarms
+  DBCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-primary-high-cpu'
+      AlarmDescription: Alert when database CPU is high
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Ref DBCluster
+
+  DBConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-primary-high-connections'
+      AlarmDescription: Alert when database connections are high
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Ref DBCluster
+
+  # Secrets Manager for Database Credentials
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvironmentName}/database/credentials'
+      Description: Database credentials for Aurora cluster
+      SecretString: !Sub |
+        {
+          "username": "${DBUsername}",
+          "password": "${DBPassword}",
+          "engine": "${Engine}",
+          "host": "${DBCluster.Endpoint.Address}",
+          "port": ${DBCluster.Endpoint.Port},
+          "dbname": "${DBName}"
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-secret'
+
+  # Attach secret to RDS cluster
+  SecretTargetAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DBSecret
+      TargetId: !Ref DBCluster
+      TargetType: AWS::RDS::DBCluster
+
+Outputs:
+  GlobalClusterIdentifier:
+    Description: Global cluster identifier
+    Value: !Ref GlobalCluster
+    Export:
+      Name: !Sub '${EnvironmentName}-GlobalClusterIdentifier'
+
+  DBClusterIdentifier:
+    Description: Primary DB cluster identifier
+    Value: !Ref DBCluster
+    Export:
+      Name: !Sub '${EnvironmentName}-PrimaryDBCluster'
+
+  DBClusterEndpoint:
+    Description: Primary DB cluster endpoint
+    Value: !GetAtt DBCluster.Endpoint.Address
+    Export:
+      Name: !Sub '${EnvironmentName}-PrimaryDBEndpoint'
+
+  DBClusterReadEndpoint:
+    Description: Primary DB cluster read endpoint
+    Value: !GetAtt DBCluster.ReadEndpoint.Address
+    Export:
+      Name: !Sub '${EnvironmentName}-PrimaryDBReadEndpoint'
+
+  DBSecretArn:
+    Description: Database secret ARN
+    Value: !Ref DBSecret
+    Export:
+      Name: !Sub '${EnvironmentName}-DBSecretArn'
+
+  DBName:
+    Description: Database name
+    Value: !Ref DBName
+    Export:
+      Name: !Sub '${EnvironmentName}-DBName'

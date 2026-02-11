@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Application Recovery Controller (ARC) - Readiness Checks'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name prefix
+    Type: String
+    Default: arc-demo
+
+  PrimaryRegion:
+    Description: Primary AWS region
+    Type: String
+    Default: us-east-1
+
+  SecondaryRegion:
+    Description: Secondary AWS region
+    Type: String
+    Default: us-west-2
+
+  PrimaryDBClusterArn:
+    Description: Primary Aurora cluster ARN
+    Type: String
+
+  SecondaryDBClusterArn:
+    Description: Secondary Aurora cluster ARN
+    Type: String
+
+Resources:
+  # Recovery Group
+  RecoveryGroup:
+    Type: AWS::Route53RecoveryReadiness::RecoveryGroup
+    Properties:
+      RecoveryGroupName: !Sub '${EnvironmentName}-recovery-group'
+      Cells:
+        - !GetAtt PrimaryCell.CellArn
+        - !GetAtt SecondaryCell.CellArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-recovery-group'
+
+  # Primary Region Cell
+  PrimaryCell:
+    Type: AWS::Route53RecoveryReadiness::Cell
+    Properties:
+      CellName: !Sub '${EnvironmentName}-primary-cell'
+      Cells: []
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-primary-cell'
+        - Key: Region
+          Value: !Ref PrimaryRegion
+
+  # Secondary Region Cell
+  SecondaryCell:
+    Type: AWS::Route53RecoveryReadiness::Cell
+    Properties:
+      CellName: !Sub '${EnvironmentName}-secondary-cell'
+      Cells: []
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-secondary-cell'
+        - Key: Region
+          Value: !Ref SecondaryRegion
+
+  # Resource Set for Aurora Database
+  DatabaseResourceSet:
+    Type: AWS::Route53RecoveryReadiness::ResourceSet
+    Properties:
+      ResourceSetName: !Sub '${EnvironmentName}-database-resource-set'
+      ResourceSetType: 'AWS::RDS::DBCluster'
+      Resources:
+        - ResourceArn: !Ref PrimaryDBClusterArn
+          ReadinessScopes:
+            - !GetAtt PrimaryCell.CellArn
+        - ResourceArn: !Ref SecondaryDBClusterArn
+          ReadinessScopes:
+            - !GetAtt SecondaryCell.CellArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-database-resource-set'
+
+  # Readiness Check
+  ReadinessCheck:
+    Type: AWS::Route53RecoveryReadiness::ReadinessCheck
+    Properties:
+      ReadinessCheckName: !Sub '${EnvironmentName}-readiness-check'
+      ResourceSetName: !Ref DatabaseResourceSet
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-readiness-check'
+
+  # CloudWatch Alarm for Readiness Status
+  ReadinessAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-readiness-not-ready'
+      AlarmDescription: Alert when recovery readiness is not ready
+      MetricName: ReadinessCheckStatus
+      Namespace: AWS/Route53RecoveryReadiness
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ReadinessCheck
+          Value: !Ref ReadinessCheck
+
+Outputs:
+  RecoveryGroupArn:
+    Description: Recovery group ARN
+    Value: !GetAtt RecoveryGroup.RecoveryGroupArn
+    Export:
+      Name: !Sub '${EnvironmentName}-RecoveryGroupArn'
+
+  PrimaryCellArn:
+    Description: Primary cell ARN
+    Value: !GetAtt PrimaryCell.CellArn
+    Export:
+      Name: !Sub '${EnvironmentName}-PrimaryCellArn'
+
+  SecondaryCellArn:
+    Description: Secondary cell ARN
+    Value: !GetAtt SecondaryCell.CellArn
+    Export:
+      Name: !Sub '${EnvironmentName}-SecondaryCellArn'
+
+  ReadinessCheckArn:
+    Description: Readiness check ARN
+    Value: !GetAtt ReadinessCheck.ReadinessCheckArn
+    Export:
+      Name: !Sub '${EnvironmentName}-ReadinessCheckArn'
