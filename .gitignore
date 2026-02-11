@@ -55,7 +55,6 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 
 # Terraform (if used alongside)
 .terraform/
@@ -67,8 +66,9 @@ package-lock.json
 *.bak
 *.backup
 
-# Archive Files
-*.zip
+# Build/Distribution Archives
+build/*.zip
+dist/*.zip
 *.tar.gz
 *.tar
 
